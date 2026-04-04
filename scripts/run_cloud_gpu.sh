@@ -128,17 +128,13 @@ if torch.cuda.is_available():
 # ---------------------------------------------------------------------------
 if [ -n "$DATASET_PATH" ]; then
     log "Copying dataset from $DATASET_PATH ..."
+    mkdir -p "$WORKDIR/data"
     cp "$DATASET_PATH" "$WORKDIR/data/Rating_labeled.csv"
-    # Switch off sample mode since real data is provided
-    sed -i 's/^USE_SAMPLE: bool = True/USE_SAMPLE: bool = False/' config.py
-    log "Switched to real dataset mode (USE_SAMPLE=False)"
+    log "Dataset copied to data/Rating_labeled.csv"
 elif [ -f "$WORKDIR/data/Rating_labeled.csv" ]; then
     log "Dataset found at data/Rating_labeled.csv"
-    sed -i 's/^USE_SAMPLE: bool = True/USE_SAMPLE: bool = False/' config.py
-    log "Switched to real dataset mode (USE_SAMPLE=False)"
 else
-    warn "No dataset provided. Running in synthetic sample mode (USE_SAMPLE=True)."
-    warn "To use real data: bash run_cloud_gpu.sh --dataset /path/to/Rating_labeled.csv"
+    err "No dataset provided. Place Rating_labeled.csv in data/ or use --dataset /path/to/Rating_labeled.csv"
 fi
 
 # ---------------------------------------------------------------------------

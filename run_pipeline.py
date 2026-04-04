@@ -214,8 +214,7 @@ def main():
 
     start_step, end_step = parse_step_range(args.step)
     print(f"Running steps {start_step}–{end_step}")
-    print(f"Device: {config.DEVICE}")
-    print(f"Sample mode: {config.USE_SAMPLE}\n")
+    print(f"Device: {config.DEVICE}\n")
 
     config.set_all_seeds()
     t0 = time.time()

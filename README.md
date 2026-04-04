@@ -64,9 +64,6 @@ pip install -r requirements.txt
 
 See `data/README.md` for instructions. Place `Rating_labeled.csv` in the `data/` directory.
 
-For development without the real dataset, set `USE_SAMPLE = True` in `config.py` (default).
-This generates synthetic Indonesian-like reviews.
-
 ## Running the Pipeline
 
 ### Full pipeline (all steps)
@@ -130,7 +127,6 @@ All settings in `config.py`:
 | `NUM_EPOCHS` | `5` | Max training epochs |
 | `MAX_LEN` | `128` | Token sequence length |
 | `TFIDF_MAX_FEATURES` | `5000` | TF-IDF vocabulary size |
-| `USE_SAMPLE` | `True` | Use synthetic data for dev |
 | `RANDOM_SEED` | `42` | Global random seed |
 
 ## Expected Outputs

@@ -45,15 +45,6 @@ LABEL_NAMES: list = ["Negative", "Neutral", "Positive"]
 NUM_LABELS: int = 3
 
 # ---------------------------------------------------------------------------
-# Development / Sample Mode
-# ---------------------------------------------------------------------------
-# Set USE_SAMPLE=True when the real dataset is not available.
-# Generates synthetic Indonesian-like reviews for development.
-USE_SAMPLE: bool = True
-SAMPLE_SIZE: int = 3000          # total synthetic records
-SAMPLE_N_PER_APP: int = 500      # for stratified_sample() when using full dataset
-
-# ---------------------------------------------------------------------------
 # Data Splitting
 # ---------------------------------------------------------------------------
 TRAIN_SPLIT: float = 0.8

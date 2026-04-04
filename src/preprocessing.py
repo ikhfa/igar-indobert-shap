@@ -7,16 +7,13 @@ Handles:
 - Text cleaning (URLs, emojis, special chars)
 - Deduplication
 - Stratified splitting
-- Synthetic sample generation for development
 """
 
-import random
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm import tqdm
@@ -106,103 +103,6 @@ SLANG_DICT: Dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Synthetic Sample Generator
-# ---------------------------------------------------------------------------
-
-_SAMPLE_POSITIVES = [
-    "aplikasi ini sangat bagus dan mudah digunakan",
-    "pelayanan sangat memuaskan terima kasih",
-    "sangat membantu pekerjaan sehari hari",
-    "fitur lengkap dan tidak ada masalah",
-    "update terbaru semakin baik dan lancar",
-    "antarmuka ramah pengguna dan responsif",
-    "proses cepat dan akurat tidak ada error",
-    "sangat membantu untuk urusan administrasi",
-    "aplikasi berjalan dengan lancar dan stabil",
-    "mudah dipahami bahkan untuk orang awam",
-]
-_SAMPLE_NEUTRALS = [
-    "biasa saja tidak ada yang istimewa",
-    "cukup membantu tapi masih ada kekurangan",
-    "lumayan bagus tapi perlu peningkatan",
-    "fitur standar tidak lebih tidak kurang",
-    "bisa digunakan tapi agak lambat",
-    "ok lah untuk kebutuhan dasar",
-    "cukup fungsional tapi tampilannya kurang menarik",
-    "belum mencoba semua fitur tapi sepertinya oke",
-    "tidak ada masalah besar tapi juga tidak sempurna",
-    "lumayan untuk aplikasi pemerintah",
-]
-_SAMPLE_NEGATIVES = [
-    "aplikasi sering error dan tidak bisa login",
-    "sangat lambat bahkan untuk membuka halaman utama",
-    "crash terus menerus sangat mengecewakan",
-    "tidak bisa upload dokumen sudah berulang kali coba",
-    "server selalu down saat dibutuhkan",
-    "data tidak tersimpan dengan benar sangat frustrasi",
-    "update malah membuat aplikasi semakin buruk",
-    "tidak ada respons dari customer service",
-    "bug masih banyak dan tidak diperbaiki",
-    "gagal terus padahal sudah update ke versi terbaru",
-]
-_APP_NAMES = [
-    "MyGov", "BPJS Kesehatan", "Samsat Online", "e-KTP", "SIAP",
-    "Antrian Online", "PeduliLindungi", "eHAC", "BRImo", "Simpel",
-]
-
-
-def generate_sample_dataset(
-    n: int = config.SAMPLE_SIZE,
-    seed: int = config.RANDOM_SEED,
-) -> pd.DataFrame:
-    """
-    Generate a synthetic Indonesian-like review dataset for development.
-
-    Produces balanced classes with minor noise (repeated chars, mixed slang).
-
-    Parameters
-    ----------
-    n : int
-        Total number of records to generate.
-    seed : int
-        Random seed.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: review_text, label, app_name, rating.
-    """
-    rng = random.Random(seed)
-    np_rng = np.random.default_rng(seed)
-
-    per_class = n // 3
-    extras = n - per_class * 3
-
-    records = []
-    pools = [_SAMPLE_NEGATIVES, _SAMPLE_NEUTRALS, _SAMPLE_POSITIVES]
-    rating_ranges = [(1, 2), (3, 3), (4, 5)]
-
-    for label, (pool, (rlo, rhi)) in enumerate(zip(pools, rating_ranges)):
-        count = per_class + (1 if label < extras else 0)
-        for _ in range(count):
-            base = rng.choice(pool)
-            # Add minor noise
-            if rng.random() < 0.3:
-                words = base.split()
-                idx = rng.randint(0, len(words) - 1)
-                words[idx] = words[idx] + rng.choice(["", "nya", " banget", " sekali"])
-                base = " ".join(words)
-            records.append({
-                config.TEXT_COL: base,
-                config.LABEL_COL: label,
-                config.APP_COL: rng.choice(_APP_NAMES),
-                config.RATING_COL: int(np_rng.integers(rlo, rhi + 1)),
-            })
-
-    df = pd.DataFrame(records)
-    return df.sample(frac=1, random_state=seed).reset_index(drop=True)
-
 
 # ---------------------------------------------------------------------------
 # Loading
@@ -210,17 +110,14 @@ def generate_sample_dataset(
 
 def load_dataset(
     path: Optional[str] = None,
-    use_sample: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
-    Load the review dataset from CSV or generate a synthetic sample.
+    Load the review dataset from CSV.
 
     Parameters
     ----------
     path : str, optional
         Path to CSV file. Defaults to config.DATASET_PATH.
-    use_sample : bool, optional
-        Override config.USE_SAMPLE. If True, returns synthetic data.
 
     Returns
     -------
@@ -230,19 +127,18 @@ def load_dataset(
     Raises
     ------
     FileNotFoundError
-        If use_sample=False and file does not exist.
+        If file does not exist.
     ValueError
         If required columns are missing.
     """
-    _use_sample = config.USE_SAMPLE if use_sample is None else use_sample
     _path = Path(path) if path else config.DATASET_PATH
 
-    if _use_sample or not _path.exists():
-        if not _use_sample:
-            print(f"[Warning] Dataset not found at {_path}. Generating synthetic sample.")
-        else:
-            print("[Info] USE_SAMPLE=True — generating synthetic dataset.")
-        return generate_sample_dataset()
+    if not _path.exists():
+        raise FileNotFoundError(
+            f"Dataset not found at {_path}. "
+            f"Place Rating_labeled.csv in the data/ directory. "
+            f"See data/README.md for instructions."
+        )
 
     print(f"Loading dataset from {_path} ...")
     df = pd.read_csv(_path, low_memory=False)
@@ -429,7 +325,7 @@ def remove_duplicates(
 
 def stratified_sample(
     df: pd.DataFrame,
-    n_per_app: int = config.SAMPLE_N_PER_APP,
+    n_per_app: int = 500,
     label_col: str = config.LABEL_COL,
     app_col: str = config.APP_COL,
     seed: int = config.RANDOM_SEED,
