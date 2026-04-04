@@ -16,10 +16,11 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
+
+tqdm = config.get_tqdm()
 
 # ---------------------------------------------------------------------------
 # Indonesian Slang Dictionary (100+ entries)

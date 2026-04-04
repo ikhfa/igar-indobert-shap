@@ -16,10 +16,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
+
+tqdm = config.get_tqdm()
 
 ModelType = Literal["rf", "svc"]
 

@@ -16,7 +16,8 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+
+
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -27,6 +28,8 @@ from transformers import (
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
+
+tqdm = config.get_tqdm()
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +136,7 @@ def train_epoch(
     correct = 0
     total = 0
 
-    pbar = tqdm(loader, desc="  Train", leave=False, mininterval=30)
+    pbar = tqdm(loader, desc="  Train", leave=False, mininterval=30 if not config.IS_NOTEBOOK else 2)
     for batch in pbar:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -186,7 +189,7 @@ def eval_epoch(
     all_labels: List[int] = []
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="  Eval ", leave=False, mininterval=30):
+        for batch in tqdm(loader, desc="  Eval ", leave=False, mininterval=30 if not config.IS_NOTEBOOK else 2):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             token_type_ids = batch.get("token_type_ids")

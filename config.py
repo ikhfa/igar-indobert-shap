@@ -107,6 +107,38 @@ def get_device() -> torch.device:
 DEVICE: torch.device = get_device()
 
 # ---------------------------------------------------------------------------
+# Progress Bars
+# ---------------------------------------------------------------------------
+def _is_notebook() -> bool:
+    """Detect if running inside a Jupyter/Colab notebook."""
+    try:
+        from IPython import get_ipython
+        shell = get_ipython().__class__.__name__
+        return shell == "ZMQInteractiveShell"
+    except Exception:
+        return False
+
+IS_NOTEBOOK: bool = _is_notebook()
+
+def get_tqdm():
+    """Return the appropriate tqdm class for the current environment."""
+    if IS_NOTEBOOK:
+        from tqdm.notebook import tqdm
+    else:
+        from tqdm import tqdm
+    return tqdm
+
+def get_tqdm_pandas():
+    """Return tqdm.pandas for DataFrame.progress_apply."""
+    if IS_NOTEBOOK:
+        from tqdm.notebook import tqdm
+        tqdm.pandas
+        return tqdm.pandas
+    else:
+        from tqdm import tqdm
+        return tqdm.pandas
+
+# ---------------------------------------------------------------------------
 # Reproducibility
 # ---------------------------------------------------------------------------
 def set_all_seeds(seed: int = RANDOM_SEED) -> None:

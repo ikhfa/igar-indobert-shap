@@ -16,10 +16,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
+
+tqdm = config.get_tqdm()
 
 # Domain keywords from the government app review domain
 DOMAIN_KEYWORDS: List[str] = [

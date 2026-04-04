@@ -15,10 +15,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
+
+tqdm = config.get_tqdm()
 
 
 # ---------------------------------------------------------------------------
