@@ -133,7 +133,7 @@ def train_epoch(
     correct = 0
     total = 0
 
-    pbar = tqdm(loader, desc="  Train", leave=False)
+    pbar = tqdm(loader, desc="  Train", leave=False, mininterval=30)
     for batch in pbar:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -186,7 +186,7 @@ def eval_epoch(
     all_labels: List[int] = []
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="  Eval ", leave=False):
+        for batch in tqdm(loader, desc="  Eval ", leave=False, mininterval=30):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             token_type_ids = batch.get("token_type_ids")
