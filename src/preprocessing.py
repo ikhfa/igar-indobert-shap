@@ -143,12 +143,21 @@ def load_dataset(
     print(f"Loading dataset from {_path} ...")
     df = pd.read_csv(_path, low_memory=False)
 
-    required = [config.TEXT_COL, config.LABEL_COL, config.APP_COL]
+    required = [config.TEXT_COL, config.RAW_LABEL_COL, config.APP_COL]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}. Found: {list(df.columns)}")
 
+    # Map string labels to integers
+    df[config.LABEL_COL] = df[config.RAW_LABEL_COL].map(config.LABEL_STR_TO_INT)
+    # Drop rows with unmapped labels
+    n_before = len(df)
+    df = df.dropna(subset=[config.LABEL_COL])
     df[config.LABEL_COL] = df[config.LABEL_COL].astype(int)
+    n_dropped = n_before - len(df)
+    if n_dropped:
+        print(f"Dropped {n_dropped:,} rows with unrecognized labels.")
+
     df[config.TEXT_COL] = df[config.TEXT_COL].astype(str)
     print(f"Loaded {len(df):,} records.")
     return df

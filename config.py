@@ -34,15 +34,18 @@ DATASET_PATH: Path = DATA_DIR / DATASET_FILENAME
 DATASET_DOI: str = "https://doi.org/10.17632/XXXXXXXX"  # Mendeley reference
 
 # Column names
-TEXT_COL: str = "review_text"
-LABEL_COL: str = "label"
-APP_COL: str = "app_name"
-RATING_COL: str = "rating"
+TEXT_COL: str = "content"
+LABEL_COL: str = "label"           # numeric label (created during preprocessing)
+APP_COL: str = "app"
+RATING_COL: str = "score"
+RAW_LABEL_COL: str = "labelScoreBase"  # original string label in the CSV
 
 # Labels
 LABEL_MAP: dict = {0: "Negative", 1: "Neutral", 2: "Positive"}
 LABEL_NAMES: list = ["Negative", "Neutral", "Positive"]
 NUM_LABELS: int = 3
+# Reverse mapping: string label → integer
+LABEL_STR_TO_INT: dict = {"Negative": 0, "Neutral": 1, "Positive": 2}
 
 # ---------------------------------------------------------------------------
 # Data Splitting
