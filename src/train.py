@@ -189,7 +189,7 @@ def eval_epoch(
     all_labels: List[int] = []
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="  Eval ", leave=False, mininterval=30 if not config.IS_NOTEBOOK else 2):
+        for batch in tqdm(loader, desc="  Eval ", leave=False, mininterval=2):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             token_type_ids = batch.get("token_type_ids")
@@ -300,6 +300,7 @@ def fine_tune_indobert(
         print(f"\nEpoch {epoch}/{num_epochs}")
 
         train_loss, train_acc = train_epoch(model, train_loader, optimizer, scheduler, _device)
+        print("  Training done. Running validation...")
         val_loss, val_preds, val_labels = eval_epoch(model, val_loader, _device)
         val_metrics = compute_metrics(val_labels, val_preds)
 
