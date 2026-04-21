@@ -150,8 +150,8 @@ def train_epoch(
 
         optimizer.zero_grad()
         if scaler is not None:
-            from torch.cuda.amp import autocast
-            with autocast():
+            from torch.amp import autocast
+            with autocast("cuda"):
                 outputs = model(input_ids, attention_mask, token_type_ids, labels)
             loss = outputs["loss"]
             scaler.scale(loss).backward()
@@ -327,8 +327,8 @@ def fine_tune_indobert(
 
     scaler = None
     if use_amp and _device.type == "cuda":
-        from torch.cuda.amp import GradScaler
-        scaler = GradScaler()
+        from torch.amp import GradScaler
+        scaler = GradScaler("cuda")
         print("Mixed precision (AMP) enabled.")
 
     log_rows = []
