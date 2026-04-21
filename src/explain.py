@@ -5,12 +5,13 @@ Uses shap.Explainer with the HuggingFace text-classification pipeline wrapper.
 Subword SHAP values are aggregated to word level for interpretability.
 """
 
+import hashlib
+import pickle
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -58,11 +59,10 @@ class _HFPipelineWrapper:
         np.ndarray
             Shape (N, num_labels) probability matrix.
         """
-        from src.preprocessing import preprocess_text
-
+        texts = [str(t) if not isinstance(t, str) else t for t in texts]
         all_probs = []
         for i in range(0, len(texts), self.batch_size):
-            batch = [preprocess_text(t) for t in texts[i: i + self.batch_size]]
+            batch = texts[i: i + self.batch_size]
             enc = self.tokenizer(
                 batch,
                 max_length=config.MAX_LEN,
@@ -116,13 +116,31 @@ class SHAPExplainer:
 
         self._wrapper = _HFPipelineWrapper(model, tokenizer, self.device, batch_size)
 
-        # Use Partition explainer with text masker (word-level)
         masker = shap.maskers.Text(tokenizer=r"\W+")
         self.explainer = shap.Explainer(
             self._wrapper,
             masker=masker,
             output_names=config.LABEL_NAMES,
         )
+
+    def _preprocess_for_shap(self, text: str) -> str:
+        from src.preprocessing import preprocess_text
+        return preprocess_text(text)
+
+    @staticmethod
+    def _cache_key(text: str, max_evals: int) -> str:
+        return hashlib.md5(f"{text}:{max_evals}".encode()).hexdigest()
+
+    def _get_cached(self, text: str, max_evals: int):
+        cache_path = config.SHAP_CACHE_DIR / f"{self._cache_key(text, max_evals)}.pkl"
+        if cache_path.exists():
+            return pickle.loads(cache_path.read_bytes())
+        return None
+
+    def _set_cached(self, text: str, max_evals: int, result):
+        config.SHAP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = config.SHAP_CACHE_DIR / f"{self._cache_key(text, max_evals)}.pkl"
+        cache_path.write_bytes(pickle.dumps(result))
 
     def explain_batch(
         self,
@@ -131,6 +149,9 @@ class SHAPExplainer:
     ) -> List[Dict[str, Dict[str, float]]]:
         """
         Compute SHAP values for a batch of texts.
+
+        Texts are preprocessed before SHAP analysis to ensure the masker
+        operates on the same text the model sees.
 
         Returns token attribution dicts, one per text, with per-class breakdowns.
         Subword tokens are aggregated to word level.
@@ -147,7 +168,8 @@ class SHAPExplainer:
         List[Dict[str, Dict[str, float]]]
             Each item: {class_name: {word: shap_value, ...}, ...}
         """
-        shap_values = self.explainer(texts, max_evals=max_evals, silent=True)
+        preprocessed = [self._preprocess_for_shap(t) for t in texts]
+        shap_values = self.explainer(preprocessed, max_evals=max_evals, silent=True)
         results = []
 
         for sample_idx in range(len(texts)):
@@ -172,6 +194,8 @@ class SHAPExplainer:
         """
         Compute SHAP values for a single review text.
 
+        Uses disk caching to avoid recomputation.
+
         Parameters
         ----------
         text : str
@@ -183,7 +207,11 @@ class SHAPExplainer:
         dict
             {class_name: {word: shap_value}}
         """
+        cached = self._get_cached(text, max_evals)
+        if cached is not None:
+            return cached
         results = self.explain_batch([text], max_evals=max_evals)
+        self._set_cached(text, max_evals, results[0])
         return results[0]
 
     def aggregate_token_importance(
@@ -286,7 +314,7 @@ class SHAPExplainer:
         plt.tight_layout()
 
         if save_path:
-            fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+            fig.savefig(str(save_path), dpi=config.PLOT_DPI, bbox_inches="tight")
         return fig
 
     def plot_waterfall(
@@ -324,11 +352,11 @@ class SHAPExplainer:
 
         # Sort by absolute value descending
         items = sorted(class_shap.items(), key=lambda x: abs(x[1]), reverse=True)
-        tokens = [i[0] for i in items[:15]]
-        values = [i[1] for i in items[:15]]
+        tokens = [i[0] for i in items[:config.WATERFALL_TOP_N]]
+        values = [i[1] for i in items[:config.WATERFALL_TOP_N]]
 
         # Compute cumulative
-        probs_base = self._wrapper([text])[0]
+        probs_base = self._wrapper([self._preprocess_for_shap(text)])[0]
         class_idx = config.LABEL_NAMES.index(class_name)
         base_val = float(probs_base[class_idx])
 
@@ -353,7 +381,7 @@ class SHAPExplainer:
         plt.tight_layout()
 
         if save_path:
-            fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+            fig.savefig(str(save_path), dpi=config.PLOT_DPI, bbox_inches="tight")
         return fig
 
 

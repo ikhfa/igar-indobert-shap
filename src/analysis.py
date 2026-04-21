@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -174,11 +173,6 @@ def find_misclassified(
         f"({100 * len(misclassified) / len(test_df):.1f}%)"
     )
 
-    # Save to CSV
-    save_path = config.METRICS_DIR / "misclassified.csv"
-    misclassified.to_csv(str(save_path), index=False)
-    print(f"Misclassified examples saved to {save_path}")
-
     return misclassified
 
 
@@ -273,9 +267,7 @@ def case_study_analysis(
             })
 
     df_cases = pd.DataFrame(rows)
-    save_path = config.METRICS_DIR / "case_studies.csv"
-    df_cases.to_csv(str(save_path), index=False)
-    print(f"\nCase study results saved to {save_path}")
+    print(f"\nCase study analysis complete ({len(df_cases)} cases).")
     return df_cases
 
 
@@ -334,9 +326,6 @@ def domain_keyword_validation(
     for _, row in matched.iterrows():
         print(f"  [{row.get('class_name', '?')}] {row[text_col]}: {row[value_col]:.4f} (rank {row.get('rank', '?')})")
 
-    save_path = config.METRICS_DIR / "domain_keyword_validation.csv"
-    matched.to_csv(str(save_path), index=False)
-    print(f"Validation results saved to {save_path}")
     return matched
 
 
@@ -371,7 +360,7 @@ def plot_class_distribution(
 
     # Overall distribution
     counts = df[label_col].map(config.LABEL_MAP).value_counts()
-    colors = ["#e74c3c", "#f39c12", "#27ae60"]
+    colors = config.LABEL_COLORS
     axes[0].bar(config.LABEL_NAMES, [counts.get(n, 0) for n in config.LABEL_NAMES], color=colors)
     axes[0].set_title("Overall Class Distribution")
     axes[0].set_ylabel("Count")
@@ -394,7 +383,7 @@ def plot_class_distribution(
 
     plt.tight_layout()
     if save_path:
-        fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+        fig.savefig(str(save_path), dpi=config.PLOT_DPI, bbox_inches="tight")
     return fig
 
 

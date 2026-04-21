@@ -73,7 +73,7 @@ def build_classifier(model_type: ModelType) -> Any:
             max_iter=config.SVC_MAX_ITER,
             random_state=config.RANDOM_SEED,
             class_weight="balanced",
-            C=1.0,
+            C=config.SVC_C,
         )
     else:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose 'rf' or 'svc'.")

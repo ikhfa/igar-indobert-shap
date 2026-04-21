@@ -2,6 +2,7 @@
 PyTorch Dataset class for IndoBERT fine-tuning.
 
 Handles tokenization, padding, and truncation for sequence classification.
+Uses lazy (on-demand) tokenization to reduce peak memory usage.
 """
 
 import sys
@@ -18,7 +19,11 @@ import config
 
 class IndoBERTDataset(Dataset):
     """
-    PyTorch Dataset wrapping tokenized Indonesian reviews for IndoBERT.
+    PyTorch Dataset wrapping Indonesian reviews for IndoBERT.
+
+    Uses lazy tokenization: texts are tokenized on-demand in __getitem__
+    instead of all at once in __init__, reducing peak memory from ~50GB to
+    negligible.
 
     Parameters
     ----------
@@ -47,18 +52,6 @@ class IndoBERTDataset(Dataset):
         self.labels = labels
         self.tokenizer = tokenizer
         self.max_len = max_len
-        self._encodings = self._batch_encode()
-
-    def _batch_encode(self) -> Dict[str, torch.Tensor]:
-        """Tokenize all texts in one batch call (more efficient than per-item)."""
-        return self.tokenizer(
-            self.texts,
-            max_length=self.max_len,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-            return_token_type_ids=True,
-        )
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -67,18 +60,28 @@ class IndoBERTDataset(Dataset):
         """
         Return a single encoded sample as a dict of tensors.
 
+        Tokenizes the text on-demand (lazy tokenization).
+
         Returns
         -------
         dict
             Keys: input_ids, attention_mask, token_type_ids, labels.
         """
+        encoding = self.tokenizer(
+            self.texts[idx],
+            max_length=self.max_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+            return_token_type_ids=True,
+        )
         return {
-            "input_ids": self._encodings["input_ids"][idx],
-            "attention_mask": self._encodings["attention_mask"][idx],
-            "token_type_ids": self._encodings.get(
+            "input_ids": encoding["input_ids"].squeeze(0),
+            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "token_type_ids": encoding.get(
                 "token_type_ids",
                 torch.zeros(self.max_len, dtype=torch.long)
-            )[idx],
+            ).squeeze(0) if "token_type_ids" in encoding else torch.zeros(self.max_len, dtype=torch.long),
             "labels": torch.tensor(self.labels[idx], dtype=torch.long),
         }
 
@@ -127,17 +130,24 @@ def build_dataloaders(
     val_ds = IndoBERTDataset(val_texts, val_labels, tokenizer, max_len)
     test_ds = IndoBERTDataset(test_texts, test_labels, tokenizer, max_len)
 
+    g = torch.Generator()
+    g.manual_seed(config.RANDOM_SEED)
+
+    num_workers = config.DATALOADER_NUM_WORKERS
+    pin_mem = torch.cuda.is_available()
+
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=0, pin_memory=torch.cuda.is_available(),
+        num_workers=num_workers, pin_memory=pin_mem,
+        generator=g,
     )
     val_loader = DataLoader(
         val_ds, batch_size=eval_batch_size, shuffle=False,
-        num_workers=0, pin_memory=torch.cuda.is_available(),
+        num_workers=num_workers, pin_memory=pin_mem,
     )
     test_loader = DataLoader(
         test_ds, batch_size=eval_batch_size, shuffle=False,
-        num_workers=0, pin_memory=torch.cuda.is_available(),
+        num_workers=num_workers, pin_memory=pin_mem,
     )
 
     return train_loader, val_loader, test_loader

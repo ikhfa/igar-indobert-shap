@@ -113,6 +113,7 @@ def train_epoch(
     optimizer: AdamW,
     scheduler,
     device: torch.device,
+    scaler=None,
 ) -> Tuple[float, float]:
     """
     Run one full training epoch.
@@ -125,6 +126,8 @@ def train_epoch(
     optimizer : AdamW
     scheduler : LR scheduler
     device : torch.device
+    scaler : GradScaler, optional
+        For mixed precision training.
 
     Returns
     -------
@@ -146,12 +149,22 @@ def train_epoch(
         labels = batch["labels"].to(device)
 
         optimizer.zero_grad()
-        outputs = model(input_ids, attention_mask, token_type_ids, labels)
-        loss = outputs["loss"]
-        loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        if scaler is not None:
+            from torch.cuda.amp import autocast
+            with autocast():
+                outputs = model(input_ids, attention_mask, token_type_ids, labels)
+            loss = outputs["loss"]
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRAD_CLIP_NORM)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(input_ids, attention_mask, token_type_ids, labels)
+            loss = outputs["loss"]
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRAD_CLIP_NORM)
+            optimizer.step()
         scheduler.step()
 
         total_loss += loss.item()
@@ -223,15 +236,19 @@ def fine_tune_indobert(
     device: Optional[torch.device] = None,
     save_path: Optional[Path] = None,
     log_path: Optional[Path] = None,
+    use_class_weights: bool = config.USE_CLASS_WEIGHTS,
+    use_amp: bool = True,
 ) -> Tuple[IndoBERTClassifier, Dict]:
     """
     Full fine-tuning loop for IndoBERT with early stopping.
 
     Training strategy:
-    - AdamW optimizer with linear warmup (10% of total steps) and cosine decay
-    - Gradient clipping at norm=1.0
+    - AdamW optimizer with linear warmup (10% of total steps) and linear decay
+    - Mixed precision (AMP) training when CUDA is available
+    - Optional class-weighted loss to handle class imbalance
+    - Gradient clipping at configurable norm
     - Early stopping on validation macro-F1 (patience=2 by default)
-    - Saves best model checkpoint to save_path
+    - Saves best model checkpoint with training metadata
 
     Parameters
     ----------
@@ -257,6 +274,10 @@ def fine_tune_indobert(
         Where to save best model weights. Defaults to config.BEST_MODEL_PATH.
     log_path : Path, optional
         CSV file for per-epoch metrics. Defaults to config.METRICS_LOG_PATH.
+    use_class_weights : bool
+        Whether to use class-weighted cross-entropy loss.
+    use_amp : bool
+        Whether to use mixed precision training (requires CUDA).
 
     Returns
     -------
@@ -275,6 +296,20 @@ def fine_tune_indobert(
     model = IndoBERTClassifier(model_name, config.NUM_LABELS)
     model.to(_device)
 
+    class_weights = None
+    if use_class_weights:
+        try:
+            from sklearn.utils.class_weight import compute_class_weight
+            labels_list = []
+            for batch in train_loader:
+                labels_list.extend(batch["labels"].tolist())
+            labels_arr = np.array(labels_list)
+            cw = compute_class_weight("balanced", classes=np.unique(labels_arr), y=labels_arr)
+            class_weights = torch.tensor(cw, dtype=torch.float).to(_device)
+            print(f"Class weights (balanced): {dict(zip(config.LABEL_NAMES, cw.round(4)))}")
+        except Exception as e:
+            print(f"Could not compute class weights: {e}. Using uniform weights.")
+
     total_steps = len(train_loader) * num_epochs
     warmup_steps = int(total_steps * warmup_ratio)
 
@@ -282,7 +317,7 @@ def fine_tune_indobert(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
-        eps=1e-8,
+        eps=config.ADAM_EPSILON,
     )
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -290,21 +325,35 @@ def fine_tune_indobert(
         num_training_steps=total_steps,
     )
 
-    # Metrics log
+    scaler = None
+    if use_amp and _device.type == "cuda":
+        from torch.cuda.amp import GradScaler
+        scaler = GradScaler()
+        print("Mixed precision (AMP) enabled.")
+
     log_rows = []
-    best_macro_f1 = -1.0
+    best_metric_val = -1.0 if config.EARLY_STOPPING_MODE == "max" else float("inf")
     patience_counter = 0
-    history: Dict = {"train_loss": [], "val_loss": [], "val_macro_f1": [], "val_accuracy": []}
+    history: Dict = {
+        "train_loss": [], "train_acc": [],
+        "val_loss": [], "val_macro_f1": [], "val_accuracy": [],
+    }
 
     for epoch in range(1, num_epochs + 1):
         print(f"\nEpoch {epoch}/{num_epochs}")
 
-        train_loss, train_acc = train_epoch(model, train_loader, optimizer, scheduler, _device)
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"  Learning rate: {current_lr:.2e}")
+
+        train_loss, train_acc = train_epoch(
+            model, train_loader, optimizer, scheduler, _device, scaler,
+        )
         print("  Training done. Running validation...")
         val_loss, val_preds, val_labels = eval_epoch(model, val_loader, _device)
         val_metrics = compute_metrics(val_labels, val_preds)
 
         history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
         history["val_loss"].append(val_loss)
         history["val_macro_f1"].append(val_metrics["macro_f1"])
         history["val_accuracy"].append(val_metrics["accuracy"])
@@ -322,14 +371,35 @@ def fine_tune_indobert(
             "val_loss": val_loss,
             "val_accuracy": val_metrics["accuracy"],
             "val_macro_f1": val_metrics["macro_f1"],
+            "learning_rate": current_lr,
         })
 
-        # Save best model
-        if val_metrics["macro_f1"] > best_macro_f1:
-            best_macro_f1 = val_metrics["macro_f1"]
+        metric_key = config.EARLY_STOPPING_METRIC
+        metric_val = val_metrics.get(
+            metric_key.replace("val_", ""),
+            val_metrics.get("macro_f1"),
+        )
+
+        is_improvement = (
+            metric_val > best_metric_val
+            if config.EARLY_STOPPING_MODE == "max"
+            else metric_val < best_metric_val
+        )
+
+        if is_improvement:
+            best_metric_val = metric_val
             patience_counter = 0
-            torch.save(model.state_dict(), str(_save_path))
-            print(f"  [OK] New best model saved (macro F1: {best_macro_f1:.4f})")
+            import hashlib
+            metadata = {
+                "epoch": epoch,
+                "val_macro_f1": val_metrics["macro_f1"],
+                "train_loss": train_loss,
+                "config_hash": hashlib.md5(
+                    str({k: v for k, v in vars(config).items() if k.isupper()}).encode()
+                ).hexdigest()[:8],
+            }
+            torch.save({"state_dict": model.state_dict(), "metadata": metadata}, str(_save_path))
+            print(f"  [OK] New best model saved ({metric_key}: {best_metric_val:.4f})")
         else:
             patience_counter += 1
             print(f"  No improvement. Patience: {patience_counter}/{early_stopping_patience}")
@@ -337,7 +407,11 @@ def fine_tune_indobert(
                 print(f"Early stopping triggered at epoch {epoch}.")
                 break
 
-    # Write metrics log
+        if config.CHECKPOINT_EVERY > 0 and epoch % config.CHECKPOINT_EVERY == 0:
+            cp_path = config.MODELS_DIR / f"indobert_epoch{epoch}.pt"
+            torch.save(model.state_dict(), str(cp_path))
+            print(f"  Checkpoint saved to {cp_path}")
+
     if log_rows:
         _log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(_log_path, "w", newline="") as f:
@@ -346,9 +420,12 @@ def fine_tune_indobert(
             writer.writerows(log_rows)
         print(f"\nTraining log saved to {_log_path}")
 
-    # Load best weights
     print(f"Loading best model from {_save_path}")
-    model.load_state_dict(torch.load(str(_save_path), map_location=_device))
+    checkpoint = torch.load(str(_save_path), map_location=_device, weights_only=True)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
 
     return model, history
 
@@ -398,7 +475,11 @@ def load_trained_model(
     _path = weights_path or config.BEST_MODEL_PATH
 
     model = IndoBERTClassifier(model_name, config.NUM_LABELS)
-    model.load_state_dict(torch.load(str(_path), map_location=_device))
+    checkpoint = torch.load(str(_path), map_location=_device, weights_only=True)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
     model.to(_device)
     model.eval()
     return model

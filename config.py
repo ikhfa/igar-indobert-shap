@@ -68,13 +68,18 @@ TFIDF_NGRAM_RANGE: tuple = (1, 2)
 TFIDF_SUBLINEAR_TF: bool = True
 RF_N_ESTIMATORS: int = 200
 SVC_MAX_ITER: int = 5000
+SVC_C: float = 1.0
 CV_N_SPLITS: int = 5
+NUM_CASE_STUDIES: int = 5
+WATERFALL_TOP_N: int = 15
+DATALOADER_NUM_WORKERS: int = 2
+PLOT_DPI: int = 150
+LABEL_COLORS: list = ["#e74c3c", "#f39c12", "#27ae60"]
 
 # ---------------------------------------------------------------------------
 # IndoBERT Fine-tuning
 # ---------------------------------------------------------------------------
 MODEL_NAME: str = "indobenchmark/indobert-base-p1"
-MODEL_NAME_ALT: str = "indolem/indobert-base-uncased"
 MAX_LEN: int = 128
 BATCH_SIZE: int = 32
 EVAL_BATCH_SIZE: int = 64
@@ -85,13 +90,21 @@ WARMUP_RATIO: float = 0.1
 EARLY_STOPPING_PATIENCE: int = 2
 BEST_MODEL_PATH: Path = MODELS_DIR / "indobert_best.pt"
 METRICS_LOG_PATH: Path = LOGS_DIR / "training_metrics.csv"
+USE_CLASS_WEIGHTS: bool = True
+GRAD_CLIP_NORM: float = 1.0
+ADAM_EPSILON: float = 1e-8
+CHECKPOINT_EVERY: int = 0       # save every N epochs (0 = disabled)
+EARLY_STOPPING_METRIC: str = "val_macro_f1"
+EARLY_STOPPING_MODE: str = "max"
 
 # ---------------------------------------------------------------------------
 # SHAP
 # ---------------------------------------------------------------------------
+SHAP_NUM_SAMPLES: int = 200      # number of test samples for SHAP analysis
 SHAP_BATCH_SIZE: int = 16
 SHAP_MAX_EVALS: int = 500        # max evaluations for shap.Explainer (partition)
 SHAP_TOP_N_TOKENS: int = 20
+SHAP_CACHE_DIR: Path = OUTPUT_DIR / "shap_cache"
 
 # ---------------------------------------------------------------------------
 # Device
@@ -132,11 +145,10 @@ def get_tqdm_pandas():
     """Return tqdm.pandas for DataFrame.progress_apply."""
     if IS_NOTEBOOK:
         from tqdm.notebook import tqdm
-        tqdm.pandas
-        return tqdm.pandas
     else:
         from tqdm import tqdm
-        return tqdm.pandas
+    tqdm.pandas()
+    return tqdm.pandas
 
 # ---------------------------------------------------------------------------
 # Reproducibility
@@ -148,6 +160,7 @@ def set_all_seeds(seed: int = RANDOM_SEED) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     os.environ["PYTHONHASHSEED"] = str(seed)
-    # HuggingFace transformers
     os.environ["TRANSFORMERS_SEED"] = str(seed)

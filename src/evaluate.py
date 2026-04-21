@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -231,7 +230,7 @@ def plot_confusion_matrix(
     plt.tight_layout()
 
     if save_path:
-        fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+        fig.savefig(str(save_path), dpi=config.PLOT_DPI, bbox_inches="tight")
 
     return fig
 
@@ -291,7 +290,7 @@ def plot_performance_comparison(
     plt.tight_layout()
 
     if save_path:
-        fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+        fig.savefig(str(save_path), dpi=config.PLOT_DPI, bbox_inches="tight")
 
     return fig
 

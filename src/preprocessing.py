@@ -159,7 +159,7 @@ def load_dataset(
     if n_dropped:
         print(f"Dropped {n_dropped:,} rows with unrecognized labels.")
 
-    df[config.TEXT_COL] = df[config.TEXT_COL].astype(str)
+    df[config.TEXT_COL] = df[config.TEXT_COL].fillna("").astype(str)
     print(f"Loaded {len(df):,} records.")
     return df
 
@@ -407,7 +407,8 @@ def split_data(
     Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
         (train_df, val_df, test_df)
     """
-    assert abs(train + val + test - 1.0) < 1e-6, "Splits must sum to 1.0"
+    if abs(train + val + test - 1.0) >= 1e-6:
+        raise ValueError(f"Split ratios must sum to 1.0, got {train + val + test}")
 
     y = df[label_col].values
 

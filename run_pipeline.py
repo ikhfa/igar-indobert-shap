@@ -8,8 +8,10 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 import time
+from datetime import datetime
 
 import config
 
@@ -113,18 +115,26 @@ def step_4_evaluate(model, tokenizer, test_loader, baseline_results):
 
 
 def step_5_shap(model, tokenizer, test_df):
-    """Compute SHAP token attributions."""
+    """Compute SHAP token attributions with stratified sampling."""
     print("\n" + "=" * 70)
     print("STEP 5: SHAP Analysis")
     print("=" * 70)
     import matplotlib.pyplot as plt
+    from sklearn.model_selection import StratifiedShuffleSplit
     from src.explain import SHAPExplainer
 
     explainer = SHAPExplainer(model, tokenizer, config.DEVICE)
 
-    # Use a subset for SHAP (computationally expensive)
-    shap_texts = test_df["clean_text"].tolist()[:50]
-    print(f"Computing SHAP for {len(shap_texts)} test samples...")
+    n_shap = min(config.SHAP_NUM_SAMPLES, len(test_df))
+    if n_shap < len(test_df):
+        splitter = StratifiedShuffleSplit(
+            n_splits=1, test_size=n_shap, random_state=config.RANDOM_SEED,
+        )
+        _, shap_indices = next(splitter.split(test_df, test_df[config.LABEL_COL]))
+        shap_texts = test_df.iloc[shap_indices]["clean_text"].tolist()
+    else:
+        shap_texts = test_df["clean_text"].tolist()
+    print(f"Computing SHAP for {len(shap_texts)} test samples (stratified)...")
 
     shap_results = explainer.explain_batch(shap_texts)
     token_df = explainer.aggregate_token_importance(shap_results)
@@ -173,7 +183,7 @@ def step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df
     # Case studies
     if len(misclassified) > 0:
         cases = case_study_analysis(
-            misclassified, explainer, n_cases=min(5, len(misclassified)),
+            misclassified, explainer, n_cases=min(config.NUM_CASE_STUDIES, len(misclassified)),
             save_dir=config.PLOTS_DIR / "case_studies",
         )
         cases.to_csv(config.METRICS_DIR / "case_studies.csv", index=False)
@@ -218,6 +228,21 @@ def main():
 
     config.set_all_seeds()
     t0 = time.time()
+
+    run_meta = {
+        "timestamp": datetime.now().isoformat(),
+        "python_version": sys.version,
+        "config": {k: str(v) for k, v in vars(config).items() if k.isupper()},
+    }
+    try:
+        import git
+        run_meta["git_commit"] = git.Repo(config.PROJECT_ROOT).head.commit.hexsha
+    except Exception:
+        run_meta["git_commit"] = "unknown"
+    config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    (config.LOGS_DIR / "run_config.json").write_text(
+        json.dumps(run_meta, indent=2), encoding="utf-8"
+    )
 
     # Shared state across steps
     train_df = val_df = test_df = None
