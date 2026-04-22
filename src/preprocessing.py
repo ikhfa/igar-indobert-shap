@@ -26,6 +26,12 @@ tqdm = config.get_tqdm()
 # Indonesian Slang Dictionary (100+ entries)
 # ---------------------------------------------------------------------------
 
+DOMAIN_CRITICAL_TERMS: set = {
+    "login", "loading", "error", "server", "otp", "crash", "update",
+    "bug", "fix", "download", "upload", "verifikasi", "registrasi",
+    "password", "notifikasi", "koneksi", "install", "uninstall",
+}
+
 SLANG_DICT: Dict[str, str] = {
     # Pronouns / determiners
     "gue": "saya", "gw": "saya", "aku": "saya", "lo": "kamu", "lu": "kamu",
@@ -69,14 +75,12 @@ SLANG_DICT: Dict[str, str] = {
     # Time
     "kmrn": "kemarin", "bsk": "besok", "hr": "hari", "bln": "bulan",
     "thn": "tahun", "mgg": "minggu",
-    # App-specific
+    # App-specific abbreviations (domain-critical terms preserved as-is)
     "app": "aplikasi", "aplksi": "aplikasi", "apk": "aplikasi",
     "versi": "versi", "updt": "update", "upd": "update",
     "instal": "install", "unstall": "uninstall",
-    "load": "muat", "loading": "memuat",
-    "error": "error", "eror": "error",
-    "login": "masuk", "log in": "masuk",
-    "pass": "kata sandi", "password": "kata sandi",
+    "eror": "error",
+    "pass": "kata sandi",
     # Sentiment / adjectives
     "ok": "oke", "oke": "oke", "okey": "oke",
     "bagus": "bagus", "bgus": "bagus",
@@ -218,12 +222,13 @@ def clean_text(text: str) -> str:
 def normalize_slang(
     text: str,
     slang_dict: Optional[Dict[str, str]] = None,
+    preserve_terms: Optional[set] = None,
 ) -> str:
     """
     Replace Indonesian slang terms with their formal equivalents.
 
-    Tokenizes on whitespace, checks each token against the dictionary,
-    and reconstructs the sentence. Case-insensitive matching.
+    Domain-critical terms (e.g. "login", "loading", "error", "otp") are
+    preserved as-is so that SHAP token attribution can identify them.
 
     Parameters
     ----------
@@ -231,6 +236,8 @@ def normalize_slang(
         Pre-cleaned (lowercase) text.
     slang_dict : dict, optional
         Slang → formal mapping. Defaults to the built-in SLANG_DICT.
+    preserve_terms : set, optional
+        Tokens to skip during normalization. Defaults to DOMAIN_CRITICAL_TERMS.
 
     Returns
     -------
@@ -238,11 +245,22 @@ def normalize_slang(
         Text with slang terms replaced.
     """
     _dict = slang_dict if slang_dict is not None else SLANG_DICT
+    _preserve = preserve_terms if preserve_terms is not None else DOMAIN_CRITICAL_TERMS
     tokens = text.split()
-    return " ".join(_dict.get(tok, tok) for tok in tokens)
+    result = []
+    for tok in tokens:
+        if tok in _preserve:
+            result.append(tok)
+        else:
+            result.append(_dict.get(tok, tok))
+    return " ".join(result)
 
 
-def preprocess_text(text: str, slang_dict: Optional[Dict[str, str]] = None) -> str:
+def preprocess_text(
+    text: str,
+    slang_dict: Optional[Dict[str, str]] = None,
+    preserve_terms: Optional[set] = None,
+) -> str:
     """
     Full preprocessing pipeline: clean → normalize slang.
 
@@ -252,13 +270,15 @@ def preprocess_text(text: str, slang_dict: Optional[Dict[str, str]] = None) -> s
         Raw text.
     slang_dict : dict, optional
         Custom slang dictionary.
+    preserve_terms : set, optional
+        Tokens to skip during normalization.
 
     Returns
     -------
     str
         Fully preprocessed text.
     """
-    return normalize_slang(clean_text(text), slang_dict)
+    return normalize_slang(clean_text(text), slang_dict, preserve_terms)
 
 
 def preprocess_dataframe(

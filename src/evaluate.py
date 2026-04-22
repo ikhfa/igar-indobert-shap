@@ -1,13 +1,14 @@
 """
 Evaluation metrics and reporting for sentiment classification models.
 
-Computes: accuracy, macro F1/precision/recall, per-class metrics, Cohen's kappa.
+Computes: accuracy, macro F1/precision/recall, per-class metrics, Cohen's kappa,
+          bootstrap confidence intervals, pairwise significance tests.
 Produces: confusion matrix plots, comparison tables.
 """
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -295,6 +296,229 @@ def plot_performance_comparison(
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Bootstrap Confidence Intervals & Significance Testing
+# ---------------------------------------------------------------------------
+
+def bootstrap_ci(
+    y_true: List[int],
+    y_pred: List[int],
+    metric_fn=None,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Compute bootstrap confidence intervals for classification metrics.
+
+    Parameters
+    ----------
+    y_true : List[int]
+        True labels.
+    y_pred : List[int]
+        Predicted labels.
+    metric_fn : callable, optional
+        Function(y_true, y_pred) -> float. Defaults to macro-F1.
+    n_bootstrap : int
+        Number of bootstrap resamples.
+    confidence : float
+        Confidence level (e.g. 0.95 for 95% CI).
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    dict
+        Keys: 'accuracy', 'macro_f1', 'cohens_kappa'.
+        Values: (point_estimate, ci_lower, ci_upper).
+    """
+    rng = np.random.RandomState(seed)
+    y_true_arr = np.array(y_true)
+    y_pred_arr = np.array(y_pred)
+    n = len(y_true_arr)
+
+    alpha = (1.0 - confidence) / 2.0
+
+    boot_scores = {"accuracy": [], "macro_f1": [], "cohens_kappa": []}
+
+    for _ in range(n_bootstrap):
+        idx = rng.randint(0, n, size=n)
+        yt = y_true_arr[idx]
+        yp = y_pred_arr[idx]
+        boot_scores["accuracy"].append(accuracy_score(yt, yp))
+        boot_scores["macro_f1"].append(f1_score(yt, yp, average="macro", zero_division=0))
+        boot_scores["cohens_kappa"].append(cohen_kappa_score(yt, yp))
+
+    results = {}
+    for metric_name, scores in boot_scores.items():
+        scores_arr = np.array(scores)
+        point_est = {
+            "accuracy": accuracy_score(y_true_arr, y_pred_arr),
+            "macro_f1": f1_score(y_true_arr, y_pred_arr, average="macro", zero_division=0),
+            "cohens_kappa": cohen_kappa_score(y_true_arr, y_pred_arr),
+        }[metric_name]
+        ci_lower = float(np.percentile(scores_arr, 100 * alpha))
+        ci_upper = float(np.percentile(scores_arr, 100 * (1.0 - alpha)))
+        results[metric_name] = (point_est, ci_lower, ci_upper)
+
+    return results
+
+
+def bootstrap_paired_test(
+    y_true: List[int],
+    y_pred_a: List[int],
+    y_pred_b: List[int],
+    metric: str = "macro_f1",
+    n_bootstrap: int = 10000,
+    seed: int = 42,
+) -> Dict:
+    """
+    Bootstrap-based paired significance test between two models.
+
+    Tests H0: metric(model_A) >= metric(model_B) against
+         H1: metric(model_A) < metric(model_B).
+
+    Parameters
+    ----------
+    y_true : List[int]
+        True labels.
+    y_pred_a : List[int]
+        Predictions from model A (e.g. baseline).
+    y_pred_b : List[int]
+        Predictions from model B (e.g. IndoBERT).
+    metric : str
+        One of 'macro_f1', 'accuracy', 'cohens_kappa'.
+    n_bootstrap : int
+        Number of bootstrap resamples.
+    seed : int
+        Random seed.
+
+    Returns
+    -------
+    dict
+        Keys: 'metric_a', 'metric_b', 'delta', 'p_value',
+              'significant_at_0.05', 'n_bootstrap'.
+    """
+    rng = np.random.RandomState(seed)
+    y_true_arr = np.array(y_true)
+    ya = np.array(y_pred_a)
+    yb = np.array(y_pred_b)
+    n = len(y_true_arr)
+
+    def _score(yt, yp, m):
+        if m == "macro_f1":
+            return f1_score(yt, yp, average="macro", zero_division=0)
+        elif m == "accuracy":
+            return accuracy_score(yt, yp)
+        elif m == "cohens_kappa":
+            return cohen_kappa_score(yt, yp)
+        else:
+            raise ValueError(f"Unknown metric: {m}")
+
+    observed_a = _score(y_true_arr, ya, metric)
+    observed_b = _score(y_true_arr, yb, metric)
+    observed_delta = observed_b - observed_a
+
+    count_ge_zero = 0
+    for _ in range(n_bootstrap):
+        idx = rng.randint(0, n, size=n)
+        yt = y_true_arr[idx]
+        delta_boot = _score(yt, yb[idx], metric) - _score(yt, ya[idx], metric)
+        if delta_boot >= 0:
+            count_ge_zero += 1
+
+    p_value = 1.0 - count_ge_zero / n_bootstrap
+
+    return {
+        "metric": metric,
+        "metric_a": float(observed_a),
+        "metric_b": float(observed_b),
+        "delta": float(observed_delta),
+        "p_value": float(p_value),
+        "significant_at_0.05": p_value < 0.05,
+        "n_bootstrap": n_bootstrap,
+    }
+
+
+def significance_comparison_table(
+    y_true: List[int],
+    model_predictions: Dict[str, List[int]],
+    baseline_name: str = None,
+    metrics: List[str] = None,
+    n_bootstrap: int = 10000,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Run pairwise bootstrap significance tests for all models vs. a baseline.
+
+    Parameters
+    ----------
+    y_true : List[int]
+        True labels.
+    model_predictions : Dict[str, List[int]]
+        Model name → predictions.
+    baseline_name : str, optional
+        Baseline model name. If None, uses the first model in the dict.
+    metrics : List[str], optional
+        Metrics to test. Defaults to ['macro_f1', 'accuracy', 'cohens_kappa'].
+    n_bootstrap : int
+    seed : int
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: model, metric, baseline_score, model_score, delta, p_value, significant.
+    """
+    _metrics = metrics or ["macro_f1", "accuracy", "cohens_kappa"]
+    _baseline = baseline_name or list(model_predictions.keys())[0]
+    baseline_preds = model_predictions[_baseline]
+
+    rows = []
+    for model_name, preds in model_predictions.items():
+        if model_name == _baseline:
+            continue
+        for m in _metrics:
+            result = bootstrap_paired_test(
+                y_true, baseline_preds, preds,
+                metric=m, n_bootstrap=n_bootstrap, seed=seed,
+            )
+            rows.append({
+                "comparison": f"{model_name} vs {_baseline}",
+                "metric": m,
+                "baseline_score": result["metric_a"],
+                "model_score": result["metric_b"],
+                "delta": result["delta"],
+                "p_value": result["p_value"],
+                "significant_0.05": result["significant_at_0.05"],
+            })
+
+    return pd.DataFrame(rows)
+
+
+def bootstrap_ci_table(
+    model_ci_results: Dict[str, Dict[str, Tuple[float, float, float]]],
+) -> pd.DataFrame:
+    """
+    Format bootstrap CI results into a publication-ready DataFrame.
+
+    Parameters
+    ----------
+    model_ci_results : dict
+        {model_name: {metric: (point_est, ci_lower, ci_upper)}}
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    rows = []
+    for model_name, metrics in model_ci_results.items():
+        row = {"Model": model_name}
+        for metric_name, (point, lo, hi) in metrics.items():
+            row[f"{metric_name}"] = f"{point:.4f} [{lo:.4f}, {hi:.4f}]"
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("Model")
+
+
 if __name__ == "__main__":
     # Quick smoke test
     y_true = [0, 1, 2, 0, 2, 1, 2, 0, 1, 2]
@@ -312,3 +536,21 @@ if __name__ == "__main__":
     fig = plot_confusion_matrix(y_true, y_pred, save_path=config.PLOTS_DIR / "cm_test.png")
     plt.close(fig)
     print("Confusion matrix saved.")
+
+    # Bootstrap test
+    rng = np.random.RandomState(42)
+    y_true_big = rng.randint(0, 3, 500)
+    y_pred_a = y_true_big.copy()
+    y_pred_b = y_true_big.copy()
+    noise_a = rng.choice(len(y_true_big), size=100, replace=False)
+    noise_b = rng.choice(len(y_true_big), size=30, replace=False)
+    y_pred_a[noise_a] = (y_pred_a[noise_a] + 1) % 3
+    y_pred_b[noise_b] = (y_pred_b[noise_b] + 1) % 3
+
+    ci = bootstrap_ci(y_true_big, y_pred_a, n_bootstrap=100)
+    print("\nBootstrap CI for model A:")
+    for m, (pt, lo, hi) in ci.items():
+        print(f"  {m}: {pt:.4f} [{lo:.4f}, {hi:.4f}]")
+
+    sig = bootstrap_paired_test(y_true_big, y_pred_a, y_pred_b, n_bootstrap=1000)
+    print(f"\nPaired test: delta={sig['delta']:.4f}, p={sig['p_value']:.4f}")

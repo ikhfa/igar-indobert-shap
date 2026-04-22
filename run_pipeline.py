@@ -75,15 +75,23 @@ def step_3_train_indobert(train_df, val_df, test_df):
     return model, tokenizer, test_loader, history
 
 
-def step_4_evaluate(model, tokenizer, test_loader, baseline_results):
-    """Evaluate IndoBERT on test set and compare with baselines."""
+def step_4_evaluate(model, tokenizer, test_loader, baseline_results, train_df, test_df):
+    """Evaluate IndoBERT on test set, compare with baselines, run significance tests."""
     print("\n" + "=" * 70)
     print("STEP 4: Evaluation & Comparison")
     print("=" * 70)
     import matplotlib.pyplot as plt
     from src.train import eval_epoch
-    from src.evaluate import compute_metrics, plot_confusion_matrix, classification_report_df
-    from src.analysis import performance_comparison_table, plot_performance_comparison
+    from src.evaluate import (
+        compute_metrics, plot_confusion_matrix, classification_report_df,
+        bootstrap_ci, bootstrap_paired_test, bootstrap_ci_table,
+        significance_comparison_table,
+    )
+    from src.analysis import (
+        performance_comparison_table, plot_performance_comparison,
+        per_app_evaluation, per_app_baseline_evaluation,
+        combined_per_app_table, plot_per_app_comparison,
+    )
 
     _, y_pred, y_true = eval_epoch(model, test_loader, config.DEVICE)
     indobert_metrics = compute_metrics(y_true, y_pred)
@@ -96,12 +104,10 @@ def step_4_evaluate(model, tokenizer, test_loader, baseline_results):
     report = classification_report_df(y_true, y_pred)
     print(f"\n{report}\n")
 
-    # Confusion matrix
     fig = plot_confusion_matrix(y_true, y_pred, save_path=config.PLOTS_DIR / "cm_indobert.png")
     plt.close(fig)
     print("Confusion matrix saved to output/plots/cm_indobert.png")
 
-    # Model comparison
     all_results = {**baseline_results, "IndoBERT (fine-tuned)": indobert_metrics}
     comparison_df = performance_comparison_table(baseline_results, indobert_metrics,
                                                   save_path=config.METRICS_DIR / "comparison.csv")
@@ -110,6 +116,63 @@ def step_4_evaluate(model, tokenizer, test_loader, baseline_results):
     fig = plot_performance_comparison(all_results, save_path=config.PLOTS_DIR / "model_comparison.png")
     plt.close(fig)
     print("Comparison plot saved to output/plots/model_comparison.png")
+
+    # --- Bootstrap confidence intervals ---
+    print("\n--- Bootstrap 95% Confidence Intervals ---")
+    indobert_ci = bootstrap_ci(y_true, y_pred, n_bootstrap=1000, seed=config.RANDOM_SEED)
+    baseline_preds = {}
+    for model_name in baseline_results:
+        if "RF" in model_name:
+            from src.baseline import build_pipeline
+            pipe = build_pipeline("rf")
+            pipe.fit(train_df["clean_text"].tolist(), train_df[config.LABEL_COL].tolist())
+            baseline_preds[model_name] = pipe.predict(test_df["clean_text"].tolist()).tolist()
+        elif "SVC" in model_name:
+            from src.baseline import build_pipeline
+            pipe = build_pipeline("svc")
+            pipe.fit(train_df["clean_text"].tolist(), train_df[config.LABEL_COL].tolist())
+            baseline_preds[model_name] = pipe.predict(test_df["clean_text"].tolist()).tolist()
+
+    all_cis = {}
+    for bname, bpreds in baseline_preds.items():
+        all_cis[bname] = bootstrap_ci(y_true, bpreds, n_bootstrap=1000, seed=config.RANDOM_SEED)
+    all_cis["IndoBERT (fine-tuned)"] = indobert_ci
+
+    ci_df = bootstrap_ci_table(all_cis)
+    ci_df.to_csv(config.METRICS_DIR / "bootstrap_ci.csv")
+    print(ci_df.to_string())
+
+    # --- Pairwise significance tests ---
+    print("\n--- Pairwise Significance Tests (vs TF-IDF+SVC baseline) ---")
+    all_model_preds = dict(baseline_preds)
+    all_model_preds["IndoBERT (fine-tuned)"] = y_pred
+
+    baseline_key = "TF-IDF+SVC" if "TF-IDF+SVC" in all_model_preds else list(all_model_preds.keys())[0]
+    sig_df = significance_comparison_table(
+        y_true, all_model_preds, baseline_name=baseline_key,
+        n_bootstrap=10000, seed=config.RANDOM_SEED,
+    )
+    sig_df.to_csv(config.METRICS_DIR / "significance_tests.csv", index=False)
+    print(sig_df.to_string(index=False))
+
+    # --- Per-app evaluation ---
+    print("\n--- Per-App Evaluation ---")
+    indobert_per_app = per_app_evaluation(model, tokenizer, test_df)
+    indobert_per_app.to_csv(config.METRICS_DIR / "per_app_indobert.csv", index=False)
+
+    baseline_per_app = per_app_baseline_evaluation(train_df, test_df)
+    combined_per_app = combined_per_app_table(
+        baseline_per_app, indobert_per_app,
+        save_path=config.METRICS_DIR / "per_app_comparison.csv",
+    )
+
+    fig = plot_per_app_comparison(combined_per_app, metric="macro_f1",
+                                  save_path=config.PLOTS_DIR / "per_app_macro_f1.png")
+    plt.close(fig)
+    fig = plot_per_app_comparison(combined_per_app, metric="accuracy",
+                                  save_path=config.PLOTS_DIR / "per_app_accuracy.png")
+    plt.close(fig)
+    print("Per-app comparison plots saved.")
 
     return indobert_metrics, y_pred, y_true
 
@@ -153,7 +216,8 @@ def step_5_shap(model, tokenizer, test_df):
     return explainer, shap_results, token_df
 
 
-def step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df):
+def step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df,
+                    full_df=None):
     """Misclassification case studies and domain keyword validation."""
     print("\n" + "=" * 70)
     print("STEP 6: Analysis & Case Studies")
@@ -166,21 +230,15 @@ def step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df
         plot_class_distribution,
     )
 
-    # Class distribution
-    from src.preprocessing import load_dataset, preprocess_dataframe, remove_duplicates
-    df_full = load_dataset()
-    df_full = preprocess_dataframe(df_full)
-    df_full = remove_duplicates(df_full)
-    fig = plot_class_distribution(df_full, save_path=config.PLOTS_DIR / "class_distribution.png")
-    plt.close(fig)
-    print("Class distribution plot saved.")
+    if full_df is not None:
+        fig = plot_class_distribution(full_df, save_path=config.PLOTS_DIR / "class_distribution.png")
+        plt.close(fig)
+        print("Class distribution plot saved.")
 
-    # Misclassifications
     misclassified = find_misclassified(model, tokenizer, test_df)
     print(f"Found {len(misclassified)} misclassified samples.")
     misclassified.to_csv(config.METRICS_DIR / "misclassified.csv", index=False)
 
-    # Case studies
     if len(misclassified) > 0:
         cases = case_study_analysis(
             misclassified, explainer, n_cases=min(config.NUM_CASE_STUDIES, len(misclassified)),
@@ -189,7 +247,6 @@ def step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df
         cases.to_csv(config.METRICS_DIR / "case_studies.csv", index=False)
         print(f"Case studies saved ({len(cases)} cases).")
 
-    # Domain keyword validation
     kw_df = domain_keyword_validation(token_df)
     kw_df.to_csv(config.METRICS_DIR / "domain_keyword_validation.csv", index=False)
     print(f"Domain keyword validation: {len(kw_df)} keywords matched in SHAP rankings.")
@@ -246,6 +303,7 @@ def main():
 
     # Shared state across steps
     train_df = val_df = test_df = None
+    full_df = None
     baseline_results = None
     model = tokenizer = test_loader = history = None
     indobert_metrics = None
@@ -254,6 +312,7 @@ def main():
     # Step 1
     if start_step <= 1 <= end_step:
         train_df, val_df, test_df = step_1_preprocessing()
+        full_df = None
 
     # Step 2
     if start_step <= 2 <= end_step:
@@ -270,7 +329,6 @@ def main():
     # Step 4
     if start_step <= 4 <= end_step:
         if model is None:
-            # Load trained model
             from src.train import load_tokenizer, load_trained_model
             from src.dataset import build_dataloaders
             if train_df is None:
@@ -285,7 +343,9 @@ def main():
             )
         if baseline_results is None:
             baseline_results = step_2_baselines(train_df, test_df)
-        indobert_metrics, _, _ = step_4_evaluate(model, tokenizer, test_loader, baseline_results)
+        indobert_metrics, _, _ = step_4_evaluate(
+            model, tokenizer, test_loader, baseline_results, train_df, test_df,
+        )
 
     # Step 5
     if start_step <= 5 <= end_step:
@@ -307,7 +367,8 @@ def main():
             model = load_trained_model()
         if explainer is None:
             explainer, shap_results, token_df = step_5_shap(model, tokenizer, test_df)
-        step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df)
+        step_6_analysis(model, tokenizer, test_df, explainer, shap_results, token_df,
+                        full_df=full_df)
 
     elapsed = time.time() - t0
     print(f"\nPipeline finished in {elapsed / 60:.1f} minutes.")

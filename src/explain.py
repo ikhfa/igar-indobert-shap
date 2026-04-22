@@ -59,6 +59,8 @@ class _HFPipelineWrapper:
         np.ndarray
             Shape (N, num_labels) probability matrix.
         """
+        if isinstance(texts, str):
+            texts = [texts]
         texts = [str(t) if not isinstance(t, str) else t for t in texts]
         all_probs = []
         for i in range(0, len(texts), self.batch_size):
@@ -116,7 +118,7 @@ class SHAPExplainer:
 
         self._wrapper = _HFPipelineWrapper(model, tokenizer, self.device, batch_size)
 
-        masker = shap.maskers.Text(tokenizer=r"\W+")
+        masker = shap.maskers.Text(self.tokenizer)
         self.explainer = shap.Explainer(
             self._wrapper,
             masker=masker,
@@ -142,6 +144,57 @@ class SHAPExplainer:
         cache_path = config.SHAP_CACHE_DIR / f"{self._cache_key(text, max_evals)}.pkl"
         cache_path.write_bytes(pickle.dumps(result))
 
+    @staticmethod
+    def _aggregate_subwords_to_words(
+        tokens: list,
+        shap_values: np.ndarray,
+    ) -> Tuple[List[str], np.ndarray]:
+        """
+        Aggregate subword token SHAP values to word-level SHAP values.
+
+        Subword tokens prefixed with '##' (e.g. '##ja', '##kan') are summed
+        into their parent word. Tokens without '##' start a new word.
+
+        Parameters
+        ----------
+        tokens : list of str
+            Subword tokens from the model tokenizer.
+        shap_values : np.ndarray
+            Shape (num_tokens, num_classes) SHAP values.
+
+        Returns
+        -------
+        Tuple[List[str], np.ndarray]
+            (word_list, word_shap_values) where word_shap_values has shape
+            (num_words, num_classes).
+        """
+        if len(tokens) == 0:
+            return [], np.array([]).reshape(0, shap_values.shape[1] if shap_values.ndim > 1 else 0)
+
+        words: List[str] = []
+        word_shap: List[np.ndarray] = []
+
+        current_word = ""
+        current_shap = np.zeros(shap_values.shape[1] if shap_values.ndim > 1 else 1, dtype=np.float64)
+
+        for i, tok in enumerate(tokens):
+            val = shap_values[i] if shap_values.ndim > 1 else np.array([shap_values[i]])
+            if tok.startswith("##") and current_word:
+                current_word += tok[2:]
+                current_shap += val
+            else:
+                if current_word:
+                    words.append(current_word)
+                    word_shap.append(current_shap)
+                current_word = tok.replace("##", "")
+                current_shap = np.array(val, dtype=np.float64)
+
+        if current_word:
+            words.append(current_word)
+            word_shap.append(current_shap)
+
+        return words, np.array(word_shap)
+
     def explain_batch(
         self,
         texts: List[str],
@@ -151,10 +204,8 @@ class SHAPExplainer:
         Compute SHAP values for a batch of texts.
 
         Texts are preprocessed before SHAP analysis to ensure the masker
-        operates on the same text the model sees.
-
-        Returns token attribution dicts, one per text, with per-class breakdowns.
-        Subword tokens are aggregated to word level.
+        operates on the same text the model sees. Subword tokens are
+        aggregated to word level for human-readable attributions.
 
         Parameters
         ----------
@@ -173,14 +224,18 @@ class SHAPExplainer:
         results = []
 
         for sample_idx in range(len(texts)):
+            raw_tokens = list(shap_values.data[sample_idx])
+            raw_values = shap_values.values[sample_idx]
+
+            words, word_vals = self._aggregate_subwords_to_words(raw_tokens, raw_values)
+
             sample_result: Dict[str, Dict[str, float]] = {}
             for class_idx, class_name in enumerate(config.LABEL_NAMES):
-                # shap_values.data[sample_idx] → words (str array)
-                # shap_values.values[sample_idx][:, class_idx] → shap values
-                words = shap_values.data[sample_idx]
-                values = shap_values.values[sample_idx][:, class_idx]
+                class_vals = word_vals[:, class_idx] if word_vals.ndim > 1 else word_vals
                 sample_result[class_name] = {
-                    str(word): float(val) for word, val in zip(words, values) if str(word).strip()
+                    str(word): float(val)
+                    for word, val in zip(words, class_vals)
+                    if str(word).strip()
                 }
             results.append(sample_result)
 
